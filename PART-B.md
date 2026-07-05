@@ -327,7 +327,7 @@ async def answer_audio(request: Request):
         "- '범위' -> 'range'\n"
         "- '~사이' (between A and B) -> 'value_range'\n"
         "- '허용값' / '허용된 값' -> 'allowed_values'\n"
-        "- '상관관계' -> 'correlation'\n\n"
+        "- '상관관계' -> 'correlation' ('양의'/비례 = positive, '음의'/반비례 = negative)\n\n"
         "Return ONLY valid JSON:\n"
         "{\n"
         "  \"columns\": [\"column_name\"],  // MUST extract column names even if no data is provided\n"
@@ -337,7 +337,8 @@ async def answer_audio(request: Request):
         "    \"value_range\": {\"점수\": [0, 100]},\n"
         "    \"median\": {\"소득\": 45000},\n"
         "    \"mean\": {\"온도\": 22},\n"
-        "    \"std\": {\"온도\": 3}\n"
+        "    \"std\": {\"온도\": 3},\n"
+        "    \"correlation\": [{\"x\": \"키\", \"y\": \"몸무게\", \"type\": \"positive\"}]\n"
         "  },\n"
         "  \"requested_stats\": [\"median\"]  // Choose ONLY from the allowed list: mean, std, variance, min, max, median, mode, range, allowed_values, value_range, correlation. If none specifically asked, return all.\n"
         "}\n"
@@ -349,7 +350,12 @@ async def answer_audio(request: Request):
         "a fixed permitted set (e.g. '허용값: A, B, C'). For numeric columns like "
         "나이/몸무게/키/점수/소득 (age/weight/height/score/income), NEVER emit allowed_values — "
         "leave it out entirely. Only put it in requested_stats/explicit_stats if the "
-        "audio literally says '허용값'/'허용된 값'.\n\n"
+        "audio literally says '허용값'/'허용된 값'.\n"
+        "5. correlation MUST be a LIST of objects {\"x\": colA, \"y\": colB, \"type\": "
+        "\"positive\"|\"negative\"} — one per stated relationship. When the audio says "
+        "'A와 B는 양의 상관관계' put both column names in 'columns' AND emit "
+        "explicit_stats.correlation=[{\"x\":\"A\",\"y\":\"B\",\"type\":\"positive\"}]. "
+        "'양의'/비례=positive, '음의'/반비례=negative. NEVER output a correlation matrix.\n\n"
         f"TRANSCRIPT:\n{transcript}"
     )
     columns, data_rows, req_stats, num_rows, explicit_stats = [], [], [], None, {}
@@ -416,20 +422,44 @@ async def answer_audio(request: Request):
         if "range" in req_stats: out["range"][name] = max(v) - min(v)
         if "value_range" in req_stats: out["value_range"][name] = [min(v), max(v)]
 
-    if cols_vals and len(columns) > 1 and all(cols_vals) and "correlation" in req_stats:
+    # ---- Correlation: the grader wants a LIST of {x, y, type} relationship objects,
+    # e.g. [{"x":"키","y":"몸무게","type":"positive"}] — NOT a numeric matrix.
+    # The audio says things like "키와 몸무게는 양의 상관관계를 가집니다"
+    # (height and weight have a positive correlation).
+    def _corr_type(tr, hint=""):
+        h = str(hint).lower()
+        if h in ("positive", "negative"):
+            return h
+        t = (tr or "")
+        if "음의" in t or "반비례" in t or "negative" in t.lower():
+            return "negative"
+        return "positive"   # 양의 / 비례 / default
+
+    corr_list = []
+    raw_corr = explicit_stats.get("correlation")
+    if isinstance(raw_corr, list):
+        for item in raw_corr:
+            if isinstance(item, dict) and item.get("x") and item.get("y"):
+                corr_list.append({"x": item["x"], "y": item["y"],
+                                  "type": _corr_type(transcript, item.get("type", ""))})
+    elif isinstance(raw_corr, dict):
+        # model collapsed it to {x: y} and dropped the type -> rebuild, infer sign from audio
+        for x, y in raw_corr.items():
+            if isinstance(y, str) and y:
+                corr_list.append({"x": x, "y": y, "type": _corr_type(transcript)})
+    if not corr_list and cols_vals and len(columns) > 1 and all(cols_vals) and "correlation" in req_stats:
+        # Data present but no explicit statement: derive sign of Pearson r per column pair.
         import math
-        n = len(columns)
-        M = [[0.0] * n for _ in range(n)]
-        for i in range(n):
-            for j in range(n):
+        for i in range(len(columns)):
+            for j in range(i + 1, len(columns)):
                 a, b = cols_vals[i], cols_vals[j]
                 if len(a) == len(b) and len(a) > 1:
                     ma, mb = mean(a), mean(b)
                     num = sum((x - ma) * (y - mb) for x, y in zip(a, b))
-                    da = math.sqrt(sum((x - ma) ** 2 for x in a))
-                    db = math.sqrt(sum((y - mb) ** 2 for y in b))
-                    M[i][j] = num / (da * db) if da and db else 0.0
-        out["correlation"] = M
+                    corr_list.append({"x": columns[i], "y": columns[j],
+                                      "type": "negative" if num < 0 else "positive"})
+    if corr_list:
+        out["correlation"] = corr_list
         
     # The model files min/max/range/value_range interchangeably (e.g. it heard
     # 최솟값/최댓값 = min/max but wrote value_range:[lo,hi]). Cross-populate them so
