@@ -246,25 +246,93 @@ async def dynamic_extract(request: Request):
 
 # ================= Q6: /answer-audio =================
 last_debug_info = {}
+last_audio_bytes = b""          # raw audio the grader last sent (for download)
+last_audio_mime = "audio/wav"
+
+audio_history = []      # every Q6 call this session: transcript + extraction + result
 
 @app.get("/debug")
 def get_debug():
     return last_debug_info
+
+@app.get("/transcripts")
+def get_transcripts():
+    """Full history of EVERY audio the grader has sent this session — each with its
+    transcript, the LLM's raw extraction, and the final answer we returned. Open
+    https://<your>.hf.space/transcripts in a browser. Newest first."""
+    return {"count": len(audio_history), "calls": list(reversed(audio_history))}
+
+@app.get("/last-audio")
+def get_last_audio():
+    """Download the EXACT audio file the grader last posted, so you can listen to
+    it and see its real format. Open https://<your>.hf.space/last-audio in a
+    browser after clicking Check on Q6 — it downloads the file."""
+    from fastapi.responses import Response
+    ext = {"audio/mp3": "mp3", "audio/ogg": "ogg", "audio/flac": "flac",
+           "audio/wav": "wav", "audio/mpeg": "mp3"}.get(last_audio_mime, "bin")
+    return Response(
+        content=last_audio_bytes, media_type=last_audio_mime,
+        headers={"Content-Disposition": f'attachment; filename="q6_audio.{ext}"'})
+
+def _find_audio_b64(body):
+    """The grader's key names aren't guaranteed. Scan the JSON body for the audio
+    id and the base64 blob no matter what they're called."""
+    audio_id, audio_b64 = None, ""
+    if isinstance(body, dict):
+        for k, v in body.items():
+            lk = str(k).lower()
+            if isinstance(v, str):
+                if ("audio" in lk or "data" in lk or "b64" in lk or "base64" in lk) and len(v) > 200:
+                    if len(v) > len(audio_b64):
+                        audio_b64 = v
+                elif "id" in lk and not audio_id:
+                    audio_id = v
+    return audio_id, audio_b64
 
 @app.post("/answer-audio")
 async def answer_audio(request: Request):
     """
     Q6: Audio extraction. Grader sends an audio file.
     Returns the fixed key structure the grader expects.
-    Request body: {"audio_id": "...", "audio_base64": "..."}
     """
-    global last_debug_info
-    body = await request.json()
-    last_debug_info = {"body_id": body.get("audio_id")}
-    audio_b64 = body.get("audio_base64", "")
+    global last_debug_info, last_audio_bytes, last_audio_mime
+
+    # --- Capture the FULL raw request so we can see exactly what the grader sends,
+    #     regardless of key names or JSON vs multipart. ---
+    raw = await request.body()
+    ctype = request.headers.get("content-type", "")
+    last_debug_info = {"content_type": ctype, "raw_len": len(raw)}
+
+    body, audio_id, audio_b64 = {}, None, ""
+    try:
+        if "application/json" in ctype or raw[:1] in (b"{", b"["):
+            body = json.loads(raw)
+            last_debug_info["body_keys"] = list(body.keys()) if isinstance(body, dict) else "non-dict"
+            audio_id, audio_b64 = _find_audio_b64(body)
+        else:
+            # multipart / raw upload: try FastAPI's form parser, else treat raw as the file
+            try:
+                form = await request.form()
+                last_debug_info["form_keys"] = list(form.keys())
+                for k, v in form.items():
+                    data = await v.read() if hasattr(v, "read") else None
+                    if data:
+                        last_audio_bytes = data
+            except Exception:
+                pass
+            if not last_audio_bytes and raw:
+                last_audio_bytes = raw
+            audio_b64 = base64.b64encode(last_audio_bytes).decode() if last_audio_bytes else ""
+    except Exception as e:
+        last_debug_info["parse_error"] = str(e)
+
+    last_debug_info["body_id"] = audio_id
+    last_debug_info["audio_b64_len"] = len(audio_b64)
     transcript = ""
     try:
-        audio = base64.b64decode(audio_b64)
+        audio = base64.b64decode(audio_b64) if audio_b64 else last_audio_bytes
+        last_audio_bytes = audio          # keep raw bytes for /last-audio download
+        last_debug_info["magic_bytes"] = audio[:16].hex()   # first bytes -> real format
 
         # Detect audio format from magic bytes and use the CORRECT mime type.
         # (Hardcoding audio/mp3 breaks students whose seeded audio is WAV/OGG/FLAC.)
@@ -276,8 +344,14 @@ async def answer_audio(request: Request):
             mime = "audio/flac"
         elif audio.startswith(b"RIFF") and audio[8:12] == b"WAVE":
             mime = "audio/wav"
+        elif audio.startswith(b"\x1aE\xdf\xa3"):     # EBML -> webm/matroska (mp4-ish container)
+            mime = "audio/webm"
+        elif audio[4:8] == b"ftyp":                   # MP4/M4A container
+            mime = "audio/mp4"
         else:
             mime = "audio/wav"   # safe default
+        last_audio_mime = mime
+        last_debug_info["detected_mime"] = mime
 
         async with httpx.AsyncClient(timeout=120) as c:
             # HACK: AIPipe's OpenAI proxy for /audio/transcriptions is broken (it forwards JSON which OpenAI rejects).
@@ -346,11 +420,14 @@ async def answer_audio(request: Request):
         "1. DO NOT confuse '중간값'/'중앙값' (median) with '평균' (mean). Map them carefully using the mapping guide above.\n"
         "2. DO NOT invent data. Extract all rows exactly as dictated.\n"
         "3. Keep column names exactly as spoken.\n"
-        "4. allowed_values is ONLY for CATEGORICAL columns whose text explicitly lists "
-        "a fixed permitted set (e.g. '허용값: A, B, C'). For numeric columns like "
-        "나이/몸무게/키/점수/소득 (age/weight/height/score/income), NEVER emit allowed_values — "
-        "leave it out entirely. Only put it in requested_stats/explicit_stats if the "
-        "audio literally says '허용값'/'허용된 값'.\n"
+        "4. allowed_values is for CATEGORICAL columns whose text explicitly lists a "
+        "fixed permitted set. This is triggered by EITHER '허용값'/'허용된 값' OR a "
+        "'one-of' enumeration: '<col>는/은 A, B, C 중 하나입니다' (col is one of A,B,C), "
+        "'<col>는 상/중/하 중 하나', '또는'/'혹은' choices, etc. In those cases emit "
+        "explicit_stats.allowed_values={\"<col>\": [\"A\",\"B\",\"C\"]} AND put <col> in "
+        "'columns' AND put 'allowed_values' in requested_stats. For purely numeric "
+        "columns like 나이/몸무게/키/점수/소득 with NO listed category set, NEVER emit "
+        "allowed_values.\n"
         "5. correlation MUST be a LIST of objects {\"x\": colA, \"y\": colB, \"type\": "
         "\"positive\"|\"negative\"} — one per stated relationship. When the audio says "
         "'A와 B는 양의 상관관계' put both column names in 'columns' AND emit "
@@ -371,6 +448,38 @@ async def answer_audio(request: Request):
         explicit_stats = ext.get("explicit_stats", {})
     except Exception:
         pass
+
+    # Deterministic safety net for allowed_values (categorical 'one-of' sets). The
+    # model frequently drops these entirely (empty explicit_stats/requested_stats),
+    # e.g. transcript "카테고리는 A, B, C 중 하나입니다" -> allowed_values={카테고리:[A,B,C]}.
+    def _extract_allowed_values(tr):
+        found = {}
+        if not tr:
+            return found
+        # '<col>는/은/이/가 <v1>, <v2>, ... 중 하나/에서' (col is one of ...)
+        for m in re.finditer(r"([가-힣A-Za-z0-9_]+?)(?:는|은|이|가)\s+([^.。\n]+?)\s*중\s*(?:하나|에서)", tr):
+            col = m.group(1).strip()
+            vals = [v.strip() for v in re.split(r"[,、/]|또는|혹은", m.group(2)) if v.strip()]
+            if col and len(vals) >= 2:
+                found[col] = vals
+        # '<col> 허용값(은/는) A, B, C(입니다)'
+        for m in re.finditer(r"([가-힣A-Za-z0-9_]+?)(?:의|는|은)?\s*허용(?:값|된\s*값)[은는]?\s*[:：]?\s*([^.。\n]+)", tr):
+            col = m.group(1).strip()
+            rawv = re.sub(r"(입니다|이다)\s*$", "", m.group(2).strip())
+            vals = [v.strip() for v in re.split(r"[,、/]|또는|혹은", rawv) if v.strip()]
+            if col and vals:
+                found[col] = vals
+        return found
+
+    av = _extract_allowed_values(transcript)
+    if av:
+        es_av = explicit_stats.setdefault("allowed_values", {})
+        for col, vals in av.items():
+            es_av.setdefault(col, vals)
+        if "allowed_values" not in req_stats and set(req_stats) != set(
+                ["mean", "std", "variance", "min", "max", "median", "mode",
+                 "range", "allowed_values", "value_range", "correlation"]):
+            req_stats.append("allowed_values")
 
     # The model often names a column ONLY inside explicit_stats (e.g. median:{"소득":45000})
     # and forgets to list it in `columns`. The grader checks `columns` strictly, so
@@ -519,6 +628,19 @@ async def answer_audio(request: Request):
             out[k] = {}
     if "correlation" not in target:
         out["correlation"] = []
+
+    # --- record this call in the full history (cap at 50 so memory stays bounded) ---
+    audio_history.append({
+        "audio_id": last_debug_info.get("body_id"),
+        "detected_mime": last_debug_info.get("detected_mime"),
+        "transcript": transcript,
+        "raw_llm": last_debug_info.get("raw_llm"),
+        "requested_stats": req_stats,
+        "target_keys": target,
+        "answer": out,
+    })
+    if len(audio_history) > 50:
+        del audio_history[0]
     return out
 
 # ================= Q8: /rank =================
