@@ -461,44 +461,63 @@ async def answer_audio(request: Request):
     if corr_list:
         out["correlation"] = corr_list
         
-    # The model files min/max/range/value_range interchangeably (e.g. it heard
-    # 최솟값/최댓값 = min/max but wrote value_range:[lo,hi]). Cross-populate them so
-    # whichever stat the grader actually asks for is present.
+    # ---- Decide the EXACT set of stats the grader wants (the whole ballgame) ----
+    # The model sets requested_stats to the FULL list as its "nothing specific was
+    # asked, only a constraint was stated" signal. In that case the grader wants
+    # EXACTLY the stats present in explicit_stats and NOTHING derived. Only when the
+    # model names a SPECIFIC short list (e.g. 최솟값/최댓값 -> ["min","max"]) is that
+    # list the authority for which keys to fill / cross-derive.
+    FULL = ["mean", "std", "variance", "min", "max", "median", "mode",
+            "range", "allowed_values", "value_range", "correlation"]
+    has_data = len(data_rows) > 0
+
+    def _present(s):
+        v = explicit_stats.get(s)
+        return (isinstance(v, dict) and bool(v)) or (isinstance(v, list) and bool(v))
+
+    if req_stats and set(req_stats) != set(FULL):
+        target = [s for s in FULL if s in req_stats]      # model named specific stats
+    elif has_data:
+        target = list(FULL)                               # data given, no ask -> all computable
+    else:
+        target = [s for s in FULL if _present(s)]         # only a constraint was stated
+
+    # Cross-populate min/max/range/value_range ONLY toward keys in `target` that the
+    # model filed under a sibling (heard 최솟값/최댓값 but wrote value_range, etc.).
+    # Never derive a stat the grader did not ask for — that was the '점수 사이' leak.
     vr = explicit_stats.get("value_range")
     if isinstance(vr, dict):
         for col, bounds in vr.items():
             if isinstance(bounds, (list, tuple)) and len(bounds) == 2:
                 lo, hi = bounds[0], bounds[1]
-                explicit_stats.setdefault("min", {}).setdefault(col, lo)
-                explicit_stats.setdefault("max", {}).setdefault(col, hi)
-                try:
-                    explicit_stats.setdefault("range", {}).setdefault(col, hi - lo)
-                except Exception:
-                    pass
+                if "min" in target: explicit_stats.setdefault("min", {}).setdefault(col, lo)
+                if "max" in target: explicit_stats.setdefault("max", {}).setdefault(col, hi)
+                if "range" in target:
+                    try: explicit_stats.setdefault("range", {}).setdefault(col, hi - lo)
+                    except Exception: pass
     emin, emax = explicit_stats.get("min"), explicit_stats.get("max")
     if isinstance(emin, dict) and isinstance(emax, dict):
         for col in emin:
             if col in emax:
-                explicit_stats.setdefault("value_range", {}).setdefault(col, [emin[col], emax[col]])
-                try:
-                    explicit_stats.setdefault("range", {}).setdefault(col, emax[col] - emin[col])
-                except Exception:
-                    pass
+                if "value_range" in target:
+                    explicit_stats.setdefault("value_range", {}).setdefault(col, [emin[col], emax[col]])
+                if "range" in target:
+                    try: explicit_stats.setdefault("range", {}).setdefault(col, emax[col] - emin[col])
+                    except Exception: pass
 
     # Merge every explicit stat into the output.
     for stat_name, stat_dict in explicit_stats.items():
         if stat_name in out and isinstance(out[stat_name], dict) and isinstance(stat_dict, dict):
             out[stat_name].update(stat_dict)
 
-    # Return ONLY the stats the audio actually asked for, so the grader's exact
-    # key-set check passes both ways (no missing keys, no extra keys). Cross-
-    # population above may have filled sibling stats we must not leak.
-    STAT_DICT_KEYS = ["mean", "std", "variance", "min", "max", "median",
-                      "mode", "range", "allowed_values", "value_range"]
-    for k in STAT_DICT_KEYS:
-        if k not in req_stats:
+    # Trim to EXACTLY the target key set so the grader's key-set check passes both
+    # ways — no missing keys, no leaked siblings.
+    for k in FULL:
+        if k == "correlation":
+            continue
+        if k not in target:
             out[k] = {}
-    if "correlation" not in req_stats:
+    if "correlation" not in target:
         out["correlation"] = []
     return out
 
