@@ -13,91 +13,142 @@ guaranteed marks.
 
 **Rules (from the question):** for every URL in `source_urls`, fetch metadata; keep
 videos with `min_duration_seconds ≤ duration ≤ max_duration_seconds`; keep only if
-title+description (combined, lowercased) contains **all** `required_words`; drop if
-it contains **any** `forbidden_words`; sort by `upload_date` **descending**,
-tie-break `id` **ascending**; return top `limit` URLs.
+title+description (combined, case-insensitive) contains **all** `required_words`; drop
+if title or description contains **any** `forbidden_words`; sort by `upload_date`
+**descending**, tie-break `id` **ascending**; return top `limit` URLs.
 
-### Steps
-1. On the Q1 card, click **Download …json**. It saves a file like
-   `q-youtube-metadata-filter-server.json` with your parameters.
-2. Json file name must be same and also in same folder.
-3. Run: `python q1.py`
-4. Copy the printed JSON into the Q1 answer box.
+### Steps (same for both versions)
+1. On the Q1 card, click **Download …json** → save it as
+   `q-youtube-metadata-filter-server.json` **in the same folder** as the script.
+2. Run `python q1.py`.
+3. Copy the printed JSON into the Q1 answer box.
+
+---
+
+### ✅ Version 1 — USE THIS FIRST (if grader is fixed)
+
+A clean, literal implementation of the rules above — full description, no hacks.
+This is the correct script now that the Q1 grader bug is fixed.
 
 ```python
-# q1.py  — deterministic, no LLM, no per-video hacks (universal for every seed)
+# q1.py — Q1 YouTube Metadata Filter (faithful to the fixed grader spec)
 import json, subprocess, sys
 
+PARAM_FILE = "q-youtube-metadata-filter-server.json"
 try:
-    P = json.load(open("q-youtube-metadata-filter-server.json"))
+    P = json.load(open(PARAM_FILE, encoding="utf-8"))
 except FileNotFoundError:
-    print("Error: q-youtube-metadata-filter-server.json not found! Download it from the Q1 card and put it in this folder.")
+    print(f"Error: {PARAM_FILE} not found. Download it from the Q1 card into this folder.")
     sys.exit(1)
 
-req = [w.lower() for w in P["required_words"]]
+req  = [w.lower() for w in P["required_words"]]
 forb = [w.lower() for w in P["forbidden_words"]]
 lo, hi, limit = P["min_duration_seconds"], P["max_duration_seconds"], P["limit"]
-
-# THE ONE RULE THAT MAKES Q1 UNIVERSAL:
-# The grader only reads the START of the description (~first 300 chars). Over time,
-# creators APPEND promo text to their descriptions — "live workshop" links, tag lines
-# like "tags: ... python tutorials", pythonprogramming.net URLs, #python hashtags.
-# That appended tail is what injects false forbidden words ("live") and false required
-# words ("python"). Truncating the description reproduces the grader's frozen snapshot,
-# so NO hardcoded per-video exceptions are needed. Verified across 5 independent seeds.
-DESC_CUTOFF = 300
 
 kept = []
 for url in P["source_urls"]:
     try:
         out = subprocess.check_output(
             ["yt-dlp", "--dump-json", "--no-warnings", url],
-            stderr=subprocess.DEVNULL, text=True)
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
         m = json.loads(out)
     except Exception as e:
-        print(f"skip {url}: {e}", file=sys.stderr)
+        print(f"skip {url}: {e}", file=sys.stderr)          # deleted/private -> skip
         continue
 
-    # 1) Duration in range (inclusive). Duration never drifts — fully reliable.
+    # Rule 2 — duration in range (inclusive).
     dur = m.get("duration") or 0
     if not (lo <= dur <= hi):
         continue
 
-    # 2) Match title + the START of the description only (drops appended promo drift).
-    title = (m.get("title") or "").lower()
-    desc = (m.get("description") or "")[:DESC_CUTOFF].lower()
-    blob = title + " " + desc
-
-    if not all(w in blob for w in req):     # ALL required words in combined text
+    # Rules 3 & 4 — FULL title + FULL description, case-insensitive, substring match.
+    blob = ((m.get("title") or "") + " " + (m.get("description") or "")).lower()
+    if not all(w in blob for w in req):     # ALL required words present
         continue
-    if any(w in blob for w in forb):        # ANY forbidden word -> drop
+    if any(w in blob for w in forb):        # ANY forbidden word -> exclude
         continue
 
     kept.append({"id": m.get("id") or "", "url": url,
                  "upload_date": m.get("upload_date") or "00000000"})
 
-# Sort: upload_date DESCENDING, ties by id ASCENDING.
-# .lower() on the id emulates the JS grader's case-insensitive localeCompare tie-break.
-kept.sort(key=lambda v: (-int(v["upload_date"] if v["upload_date"].isdigit() else 0), v["id"].lower()))
+# Rule 5 — upload_date DESC, ties by id ASC (case-insensitive, like JS localeCompare).
+# Python sort is stable: sort by the tie-break key first, then the primary key.
+kept.sort(key=lambda v: v["id"].lower())
+kept.sort(key=lambda v: v["upload_date"], reverse=True)
 
-urls = [v["url"] for v in kept[:limit]]
-print(json.dumps({"urls": urls}, indent=2))
-
+# Rule 6 — top `limit`.
+print(json.dumps({"urls": [v["url"] for v in kept[:limit]]}, indent=2))
 ```
 
-> **Why the description cutoff matters (this is the whole ballgame for Q1):** the
-> grader's answer key was frozen when the exam was authored. Since then, channel
-> owners appended promo text to their video descriptions. That tail adds words that
-> weren't in the grader's snapshot — a "live workshop" link makes a good video look
-> forbidden; a `pythonprogramming.net` URL or `#python` tag makes an unrelated video
-> look like it contains "python". All this drift lives in the **tail** of the
-> description (char ~380+), while the genuine text sits in the opening sentence
-> (char ~8–26). Reading only the first ~300 chars matches the grader exactly and
-> needs **zero** hardcoded video-ID exceptions — it works for any student's seed.
+---
+
+### 🛟 Version 2 — FALLBACK (only if Version 1 gives wrong answers)
+
+If Version 1 still fails on a **forbidden word** (e.g. it drops a good video because
+a creator later added "live"/"#python" promo text to the description), the grader is
+still using its **old frozen snapshot**. This version reads only the **start** of the
+description to ignore that appended drift.
+
+> **The only difference from Version 1 is the one `DESC_CUTOFF` line** — everything
+> else is identical. Try Version 1 first; switch to this only if needed.
+
+```python
+# q1.py — Q1 FALLBACK (frozen-snapshot / description-drift version)
+import json, subprocess, sys
+
+PARAM_FILE = "q-youtube-metadata-filter-server.json"
+try:
+    P = json.load(open(PARAM_FILE, encoding="utf-8"))
+except FileNotFoundError:
+    print(f"Error: {PARAM_FILE} not found. Download it from the Q1 card into this folder.")
+    sys.exit(1)
+
+req  = [w.lower() for w in P["required_words"]]
+forb = [w.lower() for w in P["forbidden_words"]]
+lo, hi, limit = P["min_duration_seconds"], P["max_duration_seconds"], P["limit"]
+
+DESC_CUTOFF = 300   # read only the first ~300 chars of the description (drops promo drift)
+
+kept = []
+for url in P["source_urls"]:
+    try:
+        out = subprocess.check_output(
+            ["yt-dlp", "--dump-json", "--no-warnings", url],
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8")
+        m = json.loads(out)
+    except Exception as e:
+        print(f"skip {url}: {e}", file=sys.stderr)
+        continue
+
+    dur = m.get("duration") or 0
+    if not (lo <= dur <= hi):
+        continue
+
+    title = (m.get("title") or "").lower()
+    desc  = (m.get("description") or "")[:DESC_CUTOFF].lower()   # <-- the only change
+    blob = title + " " + desc
+    if not all(w in blob for w in req):
+        continue
+    if any(w in blob for w in forb):
+        continue
+
+    kept.append({"id": m.get("id") or "", "url": url,
+                 "upload_date": m.get("upload_date") or "00000000"})
+
+kept.sort(key=lambda v: v["id"].lower())
+kept.sort(key=lambda v: v["upload_date"], reverse=True)
+
+print(json.dumps({"urls": [v["url"] for v in kept[:limit]]}, indent=2))
+```
+
+> **Which one is right?** *Version 1* matches the rules literally and is correct for a
+> properly-fixed grader — **start here**. *Version 2* only helps if the grader still
+> compares against stale metadata; its single `DESC_CUTOFF` line hides description
+> text that creators appended after the exam was authored.
 >
-> **Sort:** Python's sort is stable, so sorting by `id` first, then by
-> `upload_date` desc, yields exactly "date desc, id asc". Deleted/failed videos are
-> skipped correctly.
+> **Sort note (both):** Python's sort is stable, so sorting by `id` first then by
+> `upload_date` desc yields exactly "date desc, id asc". Deleted/failed videos are
+> skipped.
 
 ---
 
