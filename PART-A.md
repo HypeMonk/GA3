@@ -103,156 +103,58 @@ print(json.dumps({"urls": urls}, indent=2))
 
 ## Q5 — Cosine Similarity Search  → paste JSON
 
-**The traps:**
-1. **The Data Trap:** The downloaded JSON uses the `client-v1` seed, but the grader expects answers generated using the `server-v1` seed! No matter what script you run on the downloaded file, it will be wrong. We bypass downloading entirely and generate the perfect expected answer directly.
-2. **The Submission Bug:** The platform's frontend has a bug where it sends your answer as a raw string during final submission, causing the backend to crash with `Answer must be a JSON object`. You must use a Console Interceptor script to fix the payload before submitting.
+1. On Q5 card, download your assigned dataset and named it as `q-cosine-similarity-server.json`.
+2. Then Run given `python q5.py` script and copy the single-line JSON it prints. 
+> Bug is fixed now.
 
-### Steps
-1. Put your email directly in the `email` variable inside `q5.py`.
-2. Run `python q5.py` and copy the single-line JSON it prints.
-3. Paste the JSON into the Q5 text box and click **Check** to get the green checkmark.
-4. **CRITICAL:** Open your browser's Developer Tools (F12) -> **Console** tab.
-5. Paste the Console Interceptor Script (provided below) and hit Enter.
-6. Now click the real **Submit** button on the page. The interceptor will fix the bug and submit successfully.
-
-### 1. Python Generator Script (`q5.py`)
+### Python Script (`q5.py`)
 
 ```python
-# q5.py - universal deterministic solver in pure Python
-import math, json, functools
+import json
+import functools
 
-class ARC4:
-    def __init__(self, key):
-        self.S = list(range(256))
-        self.i = 0
-        self.j = 0
-        j = 0
-        keylen = len(key)
-        if not keylen: key = [0]
-        for i in range(256):
-            t = self.S[i]
-            j = (j + key[i % keylen] + t) & 255
-            self.S[i] = self.S[j]
-            self.S[j] = t
-        self.g(256)
-    def g(self, count):
-        r = 0
-        for _ in range(count):
-            self.i = (self.i + 1) & 255
-            t = self.S[self.i]
-            self.j = (self.j + t) & 255
-            self.S[self.i] = self.S[self.j]
-            self.S[self.j] = t
-            r = r * 256 + self.S[(self.S[self.i] + self.S[self.j]) & 255]
-        return r
+# Change this filename if your actual file is named differently.
+DATASET_FILE = 'q-cosine-similarity-server.json'
 
-def seedrandom(seed_str):
-    stringseed = seed_str
-    key = []
-    smear = 0
-    for i in range(len(stringseed)):
-        k = 0 if i >= len(key) else key[i & 255]
-        smear ^= k * 19
-        char_code = ord(stringseed[i])
-        val = (smear + char_code) & 255
-        if i < len(key):
-            key[i & 255] = val
-        else:
-            key.append(val)
-    arc4 = ARC4(key)
-    def prng():
-        n = arc4.g(6)
-        d = 281474976710656
-        x = 0
-        while n < 4503599627370496:
-            n = (n + x) * 256
-            d *= 256
-            x = arc4.g(1)
-        while n >= 9007199254740992:
-            n /= 2
-            d /= 2
-            x >>= 1
-        return (n + x) / d
-    return prng
+# Tie-break rule: if two documents have equal similarity, the one with the smaller doc_id comes first.
+def cmp(a, b):
+    # Use a small epsilon for floating point comparison
+    if abs(a['sim'] - b['sim']) > 1e-12:
+        return -1 if a['sim'] > b['sim'] else 1
+    
+    # Tie-breaker by doc_id (lexicographical)
+    return -1 if a['id'] < b['id'] else (1 if a['id'] > b['id'] else 0)
 
-def eo(rng):
-    n = 0
-    r = 0
-    while n == 0: n = rng()
-    while r == 0: r = rng()
-    return math.sqrt(-2 * math.log(n)) * math.cos(2 * math.pi * r)
+def main():
+    try:
+        with open(DATASET_FILE, 'r') as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"Error: {DATASET_FILE} not found. Please make sure the file is in the same folder.")
+        return
 
-def xe(rng, dim):
-    r = [eo(rng) for _ in range(dim)]
-    norm = math.sqrt(sum(u * u for u in r))
-    return [d / norm for d in r]
-
-def be(rng, base, dim):
-    t = xe(rng, dim)
-    d = [base[i] * 0.85 + t[i] * 0.15 for i in range(dim)]
-    norm = math.sqrt(sum(u * u for u in d))
-    return [i / norm for i in d]
-
-def solve(email):
-    seed = f'tds-2026-05-ga3-cosine-sim-server-v1#{email.strip().lower()}#'
-    rng = seedrandom(seed)
-    U = ['ML', 'DATA', 'WEB', 'MATH', 'CLOUD']
-    M = 64
-    H = 250
-    J = 10
-    d_base = {o: xe(rng, M) for o in U}
-    docs = []
-    for o in range(H):
-        cat = U[o % len(U)]
-        c = be(rng, d_base[cat], M)
-        docs.append({'doc_id': f'D{o + 1:06d}', 'embedding': c})
-    queries = []
-    for o in range(J):
-        cat = U[o % len(U)]
-        c = be(rng, d_base[cat], M)
-        queries.append({'query_id': f'Q{o + 1:03d}', 'embedding': c})
+    docs = data['documents']
+    queries = data['queries']
     res = {}
-    def cmp(a, b):
-        if abs(a['sim'] - b['sim']) > 1e-12:
-            return -1 if a['sim'] > b['sim'] else 1
-        return -1 if a['id'] < b['id'] else (1 if a['id'] > b['id'] else 0)
+
     for q in queries:
         sims = []
         for doc in docs:
-            dot = sum(q['embedding'][k] * doc['embedding'][k] for k in range(M))
-            normD = math.sqrt(sum(val * val for val in doc['embedding']))
-            normQ = math.sqrt(sum(val * val for val in q['embedding']))
-            sims.append({'id': doc['doc_id'], 'sim': dot / (normD * normQ)})
+            dot_product = sum(q['embedding'][k] * doc['embedding'][k] for k in range(len(q['embedding'])))
+            sims.append({'id': doc['doc_id'], 'sim': dot_product})
+            
+        # Sort using the comparison function
         sims.sort(key=functools.cmp_to_key(cmp))
+        
+        # Take the top 5 document IDs
         res[q['query_id']] = [x['id'] for x in sims[:5]]
-    return res
+
+    # Output the exact single-line JSON format required by the grader
+    print(json.dumps(res))
 
 if __name__ == '__main__':
-    # REPLACE WITH YOUR ACTUAL EMAIL
-    email = "23fxxxxx@ds.study.iitm.ac.in" 
-    
-    # Python's default json.dumps creates the exact required single-line format
-    print(json.dumps(solve(email)))
+    main()
 ```
-
-### 2. Console Interceptor Script
-
-```javascript
-// Paste this in the Developer Tools Console BEFORE clicking the Submit button!
-const originalStringify = JSON.stringify;
-JSON.stringify = function(obj, replacer, space) {
-    if (obj && obj.answers && typeof obj.answers['q-cosine-similarity-server'] === 'string') {
-        try {
-            obj.answers['q-cosine-similarity-server'] = JSON.parse(obj.answers['q-cosine-similarity-server']);
-            console.log("✅ Payload fixed before signature generation!");
-        } catch(e) { console.error(e); }
-    }
-    return originalStringify.call(this, obj, replacer, space);
-};
-console.log("✅ Interceptor installed. Click Submit on the webpage now!");
-```
-
-> **Why this works:** The interceptor patches the browser's `JSON.stringify` so that when the frontend builds the final submission payload, it injects your valid JSON object instead of the raw string. This forces the server to generate a valid cryptographic signature for the correct data type, entirely bypassing the platform's broken parser.
 
 ---
 
