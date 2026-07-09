@@ -7,7 +7,7 @@ responses. All calls to the LLM go through **AIPipe** (your college key).
 ## Step 0 — Create a New Repo & Upload Files
 
 1. Go to GitHub and create a new public or private repository.
-2. Create or upload all 4 files (given below in Step 1) to your new GitHub repository. (Don't forget to edit config.py)
+2. Create or upload all 4 files (given below in Step 1) to your new GitHub repository.
 
 ---
 
@@ -26,7 +26,7 @@ AIPIPE_TOKEN = "PASTE_YOUR_AIPIPE_TOKEN"
 # Fixed — do not change
 AIPIPE_BASE = "https://aipipe.org/openai/v1"
 TEXT_MODEL = "gpt-4o-mini"
-VISION_MODEL = "gpt-4o"      
+VISION_MODEL = "gpt-4o"          # full gpt-4o reads charts/receipts far better than mini
 EMBED_MODEL = "text-embedding-3-small"
 ```
 
@@ -474,7 +474,11 @@ async def answer_audio(request: Request):
         "\"positive\"|\"negative\"} — one per stated relationship. When the audio says "
         "'A와 B는 양의 상관관계' put both column names in 'columns' AND emit "
         "explicit_stats.correlation=[{\"x\":\"A\",\"y\":\"B\",\"type\":\"positive\"}]. "
-        "'양의'/비례=positive, '음의'/반비례=negative. NEVER output a correlation matrix.\n\n"
+        "'양의'/비례=positive, '음의'/반비례=negative. NEVER output a correlation matrix.\n"
+        "6. If the transcript states a constraint like '값은 0에서 1 사이입니다', you MUST "
+        "extract the subject ('값', '점수', etc.) as the column name into the 'columns' "
+        "list, AND map the constraint to it in 'explicit_stats' (e.g. value_range: {'값': [0, 1]}). "
+        "NEVER leave 'columns' empty if a constraint is mentioned.\n\n"
         f"TRANSCRIPT:\n{transcript}"
     )
     columns, data_rows, req_stats, num_rows, explicit_stats = [], [], [], None, {}
@@ -773,11 +777,10 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
 
 ---
 
-
 ## Step 4 — Submit (use the map)
 
-| Q      | Submit exactly                                 |
-| :----- | :--------------------------------------------- |
+| Q      | Submit exactly                                      |
+| :----- | :-------------------------------------------------- |
 | **Q2** | `https://<your-app-name>.onrender.com` (base URL)   |
 | **Q3** | `https://<your-app-name>.onrender.com` (base URL)   |
 | **Q4** | `https://<your-app-name>.onrender.com` (base URL)   |
