@@ -1,13 +1,13 @@
 # GA3 — Bucket B: One Deployed App for 7 Questions (Q2, Q3, Q4, Q6, Q7, Q8, Q9)
 
-You deploy **one** FastAPI app to Hugging Face Spaces and submit its URL for seven
+You deploy **one** FastAPI app to Render and submit its URL for seven
 questions. The grader POSTs hidden, seeded data to your endpoints and checks the
 responses. All calls to the LLM go through **AIPipe** (your college key).
 
 ## Step 0 — Create a New Repo & Upload Files
 
 1. Go to GitHub and create a new public or private repository.
-2. Create or upload all 4 files (given below in Step 1) to your new GitHub repository.
+2. Create or upload all 4 files (given below in Step 1) to your new GitHub repository. (Don't forget to edit config.py)
 
 ---
 
@@ -26,7 +26,7 @@ AIPIPE_TOKEN = "PASTE_YOUR_AIPIPE_TOKEN"
 # Fixed — do not change
 AIPIPE_BASE = "https://aipipe.org/openai/v1"
 TEXT_MODEL = "gpt-4o-mini"
-VISION_MODEL = "gpt-4o"          # full gpt-4o reads charts/receipts far better than mini
+VISION_MODEL = "gpt-4o"      
 EMBED_MODEL = "text-embedding-3-small"
 ```
 
