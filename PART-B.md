@@ -1,19 +1,22 @@
 # GA3 — Bucket B: One Deployed App for 7 Questions (Q2, Q3, Q4, Q6, Q7, Q8, Q9)
+
 You deploy **one** FastAPI app to Hugging Face Spaces and submit its URL for seven
 questions. The grader POSTs hidden, seeded data to your endpoints and checks the
 responses. All calls to the LLM go through **AIPipe** (your college key).
 
-## Step 0 -  Setup huggingface.
+## Step 0 — Create a New Repo & Upload Files
 
-1. Go to https://huggingface.co/spaces → **Create new Space**.
-2. Name it e.g. `tds-ga3`. SDK = **Docker**, template = **Blank**. Create.
-3. Open the **Files** tab → upload or create the 4 files (`config.py`, `main.py`,
-   `requirements.txt`, `Dockerfile`).
+1. Go to GitHub and create a new public or private repository.
+2. Create or upload all 4 files (given below in Step 1) to your new GitHub repository.
 
 ---
+
 ## Step 1 — Create the 4 files
-Create these locally (or straight in the Space's file editor).
+
+(Create these files locally and push them to your repo, or create them straight in the GitHub interface).
+
 ### `config.py`
+
 > Change your email and api key inside this:
 
 ```python
@@ -26,8 +29,10 @@ TEXT_MODEL = "gpt-4o-mini"
 VISION_MODEL = "gpt-4o"          # full gpt-4o reads charts/receipts far better than mini
 EMBED_MODEL = "text-embedding-3-small"
 ```
+
 ### `main.py`
-```python
+
+````python
 import json, re, base64, hashlib
 from statistics import mean, median, pstdev, pvariance, mode
 from fastapi import FastAPI, Request
@@ -417,7 +422,7 @@ async def answer_audio(request: Request):
     except Exception as e:
         transcript = ""
         last_debug_info["exception"] = str(e)
-    
+
     last_debug_info["transcript"] = transcript
 
     # Step 1: LLM extracts structured data AND identifies requested statistics
@@ -555,7 +560,7 @@ async def answer_audio(request: Request):
         if not v:
             continue
         cols_vals.append(v)
-        
+
         if "mean" in req_stats: out["mean"][name] = mean(v)
         if "std" in req_stats: out["std"][name] = pstdev(v) if len(v) > 1 else 0.0
         if "variance" in req_stats: out["variance"][name] = pvariance(v) if len(v) > 1 else 0.0
@@ -606,7 +611,7 @@ async def answer_audio(request: Request):
                                       "type": "negative" if num < 0 else "positive"})
     if corr_list:
         out["correlation"] = corr_list
-        
+
     # ---- Decide the EXACT set of stats the grader wants (the whole ballgame) ----
     # The model sets requested_stats to the FULL list as its "nothing specific was
     # asked, only a constraint was stated" signal. In that case the grader wants
@@ -732,14 +737,18 @@ async def solve(request: Request):
     except Exception as e:
         return {"reasoning": "Could not solve reliably: " + str(e)[:120].ljust(80),
                 "answer": 0}
-```
+````
+
 ### `requirements.txt`
+
 ```text
 fastapi
 uvicorn[standard]
 httpx
 ```
+
 ### `Dockerfile`
+
 ```dockerfile
 FROM python:3.11-slim
 WORKDIR /app
@@ -749,31 +758,41 @@ COPY . .
 EXPOSE 7860
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
 ```
----
-## Step 2 — Deploy to Hugging Face Spaces
-1. Deploy all files.
-2. Wait until the Space status shows **Running** (first build ~2–4 min).
-3. Your base URL is on the Space page, form: `https://<user>-tds-ga3.hf.space`.
-   (Use the three-dots → **Embed this Space** → *Direct URL* if unsure. No
-   trailing slash.)
----
 
 ---
-## Step 4 — Submit (use the map)
-| Q | Submit exactly |
-| :--- | :--- |
-| **Q2** | `https://<user>-tds-ga3.hf.space` (base URL) |
-| **Q3** | `https://<user>-tds-ga3.hf.space` (base URL) |
-| **Q4** | `https://<user>-tds-ga3.hf.space` (base URL) |
-| **Q6** | `https://<user>-tds-ga3.hf.space/answer-audio` |
-| **Q7** | `https://<user>-tds-ga3.hf.space/extract` |
-| **Q8** | `https://<user>-tds-ga3.hf.space/rank` |
-| **Q9** | `https://<user>-tds-ga3.hf.space/solve` |
-Click **Check** for each; when it says **Correct**, click **Submit**. Keep the
-Space **Running** the whole time.
+
+## Step 2 — Deployment setup on Render
+
+1. Go to https://render.com/ and log in with Mail id or github account.
+2. Click **New** -> **Web Service**.
+3. Connect your GitHub repo. (If its public then Url is enough but if its private then you have to connect your github.)
+4. Render will automatically detect the `Dockerfile` and set the Environment to **Docker**.
+5. Scroll down, ensure **Free** instance is selected, and click **Create Web Service**.
+6. Wait until the status shows "Live" with a green checkmark.
+7. Your base URL is provided at the top left of the dashboard: `https://<your-app-name>.onrender.com`.
+
 ---
+
+
+## Step 4 — Submit (use the map)
+
+| Q      | Submit exactly                                 |
+| :----- | :--------------------------------------------- |
+| **Q2** | `https://<your-app-name>.onrender.com` (base URL)   |
+| **Q3** | `https://<your-app-name>.onrender.com` (base URL)   |
+| **Q4** | `https://<your-app-name>.onrender.com` (base URL)   |
+| **Q6** | `https://<your-app-name>.onrender.com/answer-audio` |
+| **Q7** | `https://<your-app-name>.onrender.com/extract`      |
+| **Q8** | `https://<your-app-name>.onrender.com/rank`         |
+| **Q9** | `https://<your-app-name>.onrender.com/solve`        |
+
+Click **Check** for each; when it says **Correct**, click **Submit**.
+
+---
+
 ## Notes & troubleshooting
-- If Q6 fails, then go to your-url.com/debug, you will get exact error so you can debug it easily. 
+
+- If Q6 fails, then go to your-url.com/debug, you will get exact error so you can debug it easily.
 - **CORS errors from the grader:** already handled — `CORSMiddleware` allows all
   origins and methods (including `OPTIONS` preflight).
 - **Cost:** the cache means repeated grader calls are free after the first. With
