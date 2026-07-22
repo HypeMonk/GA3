@@ -46,7 +46,8 @@ forb = [w.lower() for w in P["forbidden_words"]]
 lo, hi, limit = P["min_duration_seconds"], P["max_duration_seconds"], P["limit"]
 
 kept = []
-for url in P["source_urls"]:
+for i, url in enumerate(P["source_urls"], 1):
+    print(f"[{i}/{len(P['source_urls'])}] {url}", file=sys.stderr)
     try:
         out = subprocess.check_output(
             ["yt-dlp", "--dump-json", "--no-warnings", url],
